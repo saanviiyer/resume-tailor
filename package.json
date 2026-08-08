@@ -1,0 +1,24 @@
+{
+  "name": "resume-tailor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Resume reviewer + tailor powered by Claude. Reviews a base resume against a job posting, produces a tailored resume, and drafts supplemental application answers.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,magenta \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node server/index.js",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "start": "NODE_ENV=production node server/index.js",
+    "postinstall": "npm --prefix client install"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
