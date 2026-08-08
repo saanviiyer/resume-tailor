@@ -2,7 +2,7 @@
   "name": "resume-tailor",
   "version": "1.0.0",
   "private": true,
-  "description": "Resume reviewer + tailor powered by Claude. Reviews a base resume against a job posting, produces a tailored resume, and drafts supplemental application answers.",
+  "description": "Paste a job posting and get a tailored resume plus drafted application answers.",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,magenta \"npm run dev:server\" \"npm run dev:client\"",

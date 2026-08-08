@@ -1,5 +1,8 @@
 # Resume Tailor
 
+> Paste a job posting and get a tailored resume plus drafted application answers.
+
+
 A resume reviewer + tailor. Paste your base resume and a job posting, and the app:
 
 1. **Reviews** the resume against the posting — a match score, matching strengths, gaps / missing keywords, and concrete improvement suggestions.
