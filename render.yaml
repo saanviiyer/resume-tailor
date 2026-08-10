@@ -6,8 +6,27 @@ services:
     buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
+      # --- AI ---------------------------------------------------------------
       # Leave unset to run in MOCK MODE (demoable with no key). Set a real key
       # in the Render dashboard to use the live Anthropic API.
       - key: ANTHROPIC_API_KEY
         sync: false
+
+      # --- Supabase (accounts + persistence + rate limiting) ----------------
+      # Leave ALL of these unset to run in anonymous/no-persistence mode.
+      # VITE_* are read at CLIENT BUILD TIME, so they must be present during
+      # `npm run build` on Render (set them before the first deploy).
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # --- Limits -----------------------------------------------------------
+      - key: FREE_DAILY_GENERATIONS
+        value: "5"
+
       # Render injects PORT automatically; the server honors process.env.PORT.

@@ -3,7 +3,21 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import multer from "multer";
 import Anthropic from "@anthropic-ai/sdk";
+
+import { supabaseEnabled, getUserFromRequest } from "./supabase.js";
+import { resolveDailyCap, isOverDailyLimit, remainingGenerations } from "./rateLimit.js";
+import {
+  ensureProfile,
+  countGenerationsToday,
+  recordGeneration,
+  saveApplication,
+  listApplications,
+  saveResume,
+  listResumes,
+} from "./db.js";
+import { parseResumeBuffer, MAX_UPLOAD_BYTES } from "./parse.js";
 
 dotenv.config();
 
@@ -11,6 +25,7 @@ const PORT = process.env.PORT || 3001;
 const MODEL = "claude-sonnet-5";
 const API_KEY = process.env.ANTHROPIC_API_KEY;
 const MOCK_MODE = !API_KEY;
+const DAILY_CAP = resolveDailyCap(process.env.FREE_DAILY_GENERATIONS);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The built client (vite build) lands in <repo>/client/dist.
@@ -20,11 +35,46 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
+// In-memory upload handling for resume file parsing (PDF/DOCX/TXT).
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+});
+
 // Serve the built client as static files. In dev the client is served by Vite
 // on 5173; in production this is how the SPA is delivered.
 app.use(express.static(CLIENT_DIST));
 
 const client = MOCK_MODE ? null : new Anthropic({ apiKey: API_KEY });
+
+// ---------------------------------------------------------------------------
+// Auth middleware.
+//
+// Two fallbacks are preserved (see README):
+//   - ANONYMOUS mode: Supabase env unset -> auth/limits/persistence bypassed;
+//     the app behaves like the original demo. req.user stays null.
+//   - When Supabase IS configured, protected routes require a valid JWT and set
+//     req.user; missing/invalid tokens get 401.
+// ---------------------------------------------------------------------------
+async function requireAuth(req, res, next) {
+  if (!supabaseEnabled) {
+    req.user = null; // anonymous mode
+    return next();
+  }
+  const user = await getUserFromRequest(req);
+  if (!user) {
+    return res
+      .status(401)
+      .json({ error: "Please sign in to continue.", authRequired: true });
+  }
+  req.user = user;
+  try {
+    await ensureProfile(user);
+  } catch (err) {
+    console.error("ensureProfile failed:", err.message);
+  }
+  next();
+}
 
 // ---------------------------------------------------------------------------
 // System prompt — anti-fabrication is a hard rule.
@@ -217,15 +267,49 @@ Add your ANTHROPIC_API_KEY to generate a fully rewritten, posting-aligned versio
   };
 }
 
+async function generateResult(resume, jobPosting) {
+  if (MOCK_MODE) {
+    return { mockMode: true, result: mockResult(resume, jobPosting) };
+  }
+  // Stream to avoid HTTP timeouts on the large tailored-resume output.
+  const stream = client.messages.stream({
+    model: MODEL,
+    max_tokens: 16000,
+    system: SYSTEM_PROMPT,
+    output_config: {
+      format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+    },
+    messages: [{ role: "user", content: buildUserPrompt(resume, jobPosting) }],
+  });
+
+  const message = await stream.finalMessage();
+  const textBlock = message.content.find((b) => b.type === "text");
+  if (!textBlock) throw new Error("No text content returned from the model.");
+
+  let result;
+  try {
+    result = JSON.parse(textBlock.text);
+  } catch {
+    throw new Error("Model did not return valid JSON.");
+  }
+  return { mockMode: false, result };
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, mockMode: MOCK_MODE, model: MODEL });
+  res.json({
+    ok: true,
+    mockMode: MOCK_MODE,
+    model: MODEL,
+    supabaseEnabled,
+    dailyCap: DAILY_CAP,
+  });
 });
 
-app.post("/api/generate", async (req, res) => {
-  const { resume, jobPosting } = req.body || {};
+app.post("/api/generate", requireAuth, async (req, res) => {
+  const { resume, jobPosting, jobTitle, jobUrl, resumeId } = req.body || {};
   if (!resume || !resume.trim()) {
     return res.status(400).json({ error: "Please provide your base resume." });
   }
@@ -233,41 +317,128 @@ app.post("/api/generate", async (req, res) => {
     return res.status(400).json({ error: "Please provide the job posting." });
   }
 
-  if (MOCK_MODE) {
-    return res.json({ mockMode: true, result: mockResult(resume, jobPosting) });
+  // Enforce the per-user daily cap BEFORE spending any AI call.
+  let usedToday = 0;
+  if (supabaseEnabled) {
+    try {
+      usedToday = await countGenerationsToday(req.user.id);
+    } catch (err) {
+      console.error("usage count error:", err.message);
+      return res.status(500).json({ error: "Could not verify your usage limit." });
+    }
+    if (isOverDailyLimit(usedToday, DAILY_CAP)) {
+      return res.status(429).json({
+        error: `Daily limit reached (${DAILY_CAP} generations/day). Try again tomorrow.`,
+        limitReached: true,
+        dailyCap: DAILY_CAP,
+        remaining: 0,
+      });
+    }
   }
 
   try {
-    // Stream to avoid HTTP timeouts on the large tailored-resume output.
-    const stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      output_config: {
-        format: { type: "json_schema", schema: OUTPUT_SCHEMA },
-      },
-      messages: [
-        { role: "user", content: buildUserPrompt(resume, jobPosting) },
-      ],
-    });
+    const { mockMode, result } = await generateResult(resume, jobPosting);
 
-    const message = await stream.finalMessage();
-    const textBlock = message.content.find((b) => b.type === "text");
-    if (!textBlock) throw new Error("No text content returned from the model.");
-
-    let result;
-    try {
-      result = JSON.parse(textBlock.text);
-    } catch {
-      throw new Error("Model did not return valid JSON.");
+    let remaining = null;
+    if (supabaseEnabled) {
+      // Record the generation against the cap and persist the application.
+      try {
+        await recordGeneration(req.user.id);
+        await saveApplication(req.user.id, {
+          resumeId: resumeId ?? null,
+          jobTitle: jobTitle ?? null,
+          jobUrl: jobUrl ?? null,
+          jobPosting,
+          resumeSnapshot: resume,
+          result,
+          mockMode,
+        });
+      } catch (err) {
+        // Persistence failure should not lose the user's generated result.
+        console.error("persistence error:", err.message);
+      }
+      remaining = remainingGenerations(usedToday + 1, DAILY_CAP);
     }
 
-    res.json({ mockMode: false, result });
+    res.json({ mockMode, result, remaining });
   } catch (err) {
     console.error("Generation error:", err);
     res
       .status(500)
       .json({ error: err.message || "Failed to generate. Please try again." });
+  }
+});
+
+// Parse an uploaded resume file (PDF / DOCX / TXT / MD) to plain text.
+app.post("/api/parse-resume", requireAuth, upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded." });
+  }
+  try {
+    const text = await parseResumeBuffer(
+      req.file.buffer,
+      req.file.mimetype,
+      req.file.originalname
+    );
+    if (!text || !text.trim()) {
+      return res.status(422).json({
+        error:
+          "Could not extract any text from that file. If it is a scanned image PDF, paste the text instead.",
+      });
+    }
+    res.json({ text, filename: req.file.originalname });
+  } catch (err) {
+    console.error("Parse error:", err.message);
+    res.status(400).json({ error: err.message || "Failed to parse the file." });
+  }
+});
+
+// Multer errors (e.g. file too large) arrive as an error middleware.
+app.use((err, _req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: `Upload failed: ${err.message}` });
+  }
+  next(err);
+});
+
+// History: a user's recent applications. Empty in anonymous mode.
+app.get("/api/applications", requireAuth, async (req, res) => {
+  if (!supabaseEnabled) return res.json({ applications: [] });
+  try {
+    const applications = await listApplications(req.user.id);
+    res.json({ applications });
+  } catch (err) {
+    console.error("list applications error:", err.message);
+    res.status(500).json({ error: "Could not load your history." });
+  }
+});
+
+// Saved resumes.
+app.get("/api/resumes", requireAuth, async (req, res) => {
+  if (!supabaseEnabled) return res.json({ resumes: [] });
+  try {
+    const resumes = await listResumes(req.user.id);
+    res.json({ resumes });
+  } catch (err) {
+    console.error("list resumes error:", err.message);
+    res.status(500).json({ error: "Could not load your resumes." });
+  }
+});
+
+app.post("/api/resumes", requireAuth, async (req, res) => {
+  if (!supabaseEnabled) {
+    return res.status(400).json({ error: "Saving resumes requires sign-in." });
+  }
+  const { title, content } = req.body || {};
+  if (!content || !content.trim()) {
+    return res.status(400).json({ error: "Resume content is empty." });
+  }
+  try {
+    const resume = await saveResume(req.user.id, { title, content });
+    res.json({ resume });
+  } catch (err) {
+    console.error("save resume error:", err.message);
+    res.status(500).json({ error: "Could not save the resume." });
   }
 });
 
@@ -281,9 +452,11 @@ app.get("*", (req, res, next) => {
 });
 
 app.listen(PORT, () => {
+  const aiMode = MOCK_MODE ? "MOCK MODE — no API key" : `LIVE — model ${MODEL}`;
+  const authMode = supabaseEnabled
+    ? `Supabase ON — ${DAILY_CAP > 0 ? `${DAILY_CAP}/day cap` : "no cap"}`
+    : "Supabase OFF — anonymous, no persistence";
   console.log(
-    `Resume Tailor server on http://localhost:${PORT}  [${
-      MOCK_MODE ? "MOCK MODE — no API key" : `LIVE — model ${MODEL}`
-    }]`
+    `Resume Tailor server on http://localhost:${PORT}  [${aiMode}]  [${authMode}]`
   );
 });
