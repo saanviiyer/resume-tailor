@@ -5,8 +5,8 @@
 
 A resume reviewer + tailor. Paste your base resume and a job posting, and the app:
 
-1. **Reviews** the resume against the posting — a match score, matching strengths, gaps / missing keywords, and concrete improvement suggestions.
-2. **Tailors** a rewritten resume that emphasizes relevant experience and mirrors the posting's language — **without fabricating anything**.
+1. **Reviews** the resume against the posting, a match score, matching strengths, gaps / missing keywords, and concrete improvement suggestions.
+2. **Tailors** a rewritten resume that emphasizes relevant experience and mirrors the posting's language, **without fabricating anything**.
 3. **Drafts supplemental answers** to common application prompts ("Why this company/role?", "Why are you a strong fit?", "Describe a relevant project") grounded only in your resume.
 
 Paste your resume, upload it as **PDF / DOCX / TXT / MD** (parsed server-side), or load the sample. Everything is editable, copyable, and downloadable as `.txt` / `.md`.
@@ -20,7 +20,7 @@ This is a hard rule baked into the system prompt: the model **never invents** em
 ## Tech
 
 - **Frontend:** Vite + React + TypeScript + Tailwind CSS
-- **Backend:** Node + Express (keeps the Anthropic + Supabase service-role keys server-side — never in the browser)
+- **Backend:** Node + Express (keeps the Anthropic + Supabase service-role keys server-side. Never in the browser)
 - **Model:** Claude (`claude-sonnet-5`) via `@anthropic-ai/sdk`
 - **Auth + data:** Supabase (email magic-link OTP; Postgres with Row Level Security)
 - **File parsing:** `unpdf` (PDF) + `mammoth` (DOCX), server-side, via `multer` uploads
@@ -30,14 +30,14 @@ This is a hard rule baked into the system prompt: the model **never invents** em
 
 The app ships with two independent zero-setup fallbacks, so it runs fully with no keys at all:
 
-1. **Mock AI mode** — when `ANTHROPIC_API_KEY` is unset, the server returns realistic canned review / tailored resume / answers.
-2. **Anonymous mode** — when the Supabase env vars are unset, auth, limits, and persistence are bypassed and the app behaves exactly like the original demo.
+1. **Mock AI mode**: when `ANTHROPIC_API_KEY` is unset, the server returns realistic canned review / tailored resume / answers.
+2. **Anonymous mode**: when the Supabase env vars are unset, auth, limits, and persistence are bypassed and the app behaves exactly like the original demo.
 
-When Supabase **is** configured, sign-in is required to generate and the per-user daily cap is enforced. The two fallbacks are independent — you can run live Claude anonymously, or mock AI with full accounts.
+When Supabase **is** configured, sign-in is required to generate and the per-user daily cap is enforced. The two fallbacks are independent. You can run live Claude anonymously, or mock AI with full accounts.
 
 ## Run it
 
-### Mock mode (zero setup — no API key needed)
+### Mock mode (zero setup: no API key needed)
 
 ```bash
 npm install
@@ -79,11 +79,11 @@ By default the app is a demo. To turn it into a real multi-user product with acc
 ### 1. Create a Supabase project
 
 1. Create a project at [supabase.com](https://supabase.com).
-2. From **Settings → API**, copy: the **Project URL**, the **anon public** key, and the **service_role** key (keep the service_role key secret — it bypasses RLS).
+2. From **Settings → API**, copy: the **Project URL**, the **anon public** key, and the **service_role** key (keep the service_role key secret. It bypasses RLS).
 
 ### 2. Run the migrations
 
-The schema lives in [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql). It creates `profiles`, `resumes`, `applications`, and `usage_events` — every table keyed by `user_id uuid references auth.users`, with **RLS enabled** and `auth.uid() = user_id` policies. Apply it either way:
+The schema lives in [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql). It creates `profiles`, `resumes`, `applications`, and `usage_events`. Every table keyed by `user_id uuid references auth.users`, with **RLS enabled** and `auth.uid() = user_id` policies. Apply it either way:
 
 - **Dashboard:** paste the file into the **SQL Editor** and run it.
 - **CLI:** `supabase link --project-ref <ref>` then `supabase db push`.
@@ -109,12 +109,12 @@ The `VITE_*` vars are read at **client build time**, so they must be present whe
 ### How the daily limit works
 
 - Each successful generation inserts a row into `usage_events`. Before every generation the server counts that user's events since **00:00 UTC** and returns **HTTP 429** with a clear message once the count reaches the cap.
-- The cap is `FREE_DAILY_GENERATIONS` (default `5`; set `0` for unlimited). The counting logic is pure and unit-tested — see [`server/rateLimit.js`](server/rateLimit.js) / [`server/rateLimit.test.mjs`](server/rateLimit.test.mjs) (`npm test`).
+- The cap is `FREE_DAILY_GENERATIONS` (default `5`; set `0` for unlimited). The counting logic is pure and unit-tested. See [`server/rateLimit.js`](server/rateLimit.js) / [`server/rateLimit.test.mjs`](server/rateLimit.test.mjs) (`npm test`).
 
 ### Raising limits / where Stripe plugs in later
 
 - To raise the limit for everyone, change `FREE_DAILY_GENERATIONS`.
-- For per-user limits, the `profiles` table already has a `plan` column (default `'free'`). **TODO (Stripe hook):** add a Stripe subscription, set `profiles.plan` from a Stripe webhook (`checkout.session.completed` / `customer.subscription.updated`), and make the cap a function of the plan in `server/index.js` (resolve the cap from `profiles.plan` instead of the single env constant). Stripe is intentionally **not** implemented here — this is the seam where it goes.
+- For per-user limits, the `profiles` table already has a `plan` column (default `'free'`). **TODO (Stripe hook):** add a Stripe subscription, set `profiles.plan` from a Stripe webhook (`checkout.session.completed` / `customer.subscription.updated`), and make the cap a function of the plan in `server/index.js` (resolve the cap from `profiles.plan` instead of the single env constant). Stripe is intentionally **not** implemented here. This is the seam where it goes.
 
 ## Deploy
 
@@ -146,10 +146,10 @@ docker run -p 3001:3001 -e ANTHROPIC_API_KEY=sk-ant-... resume-tailor   # live
 
 ### Render (Blueprint)
 
-`render.yaml` defines a Node web service — build `npm install && npm run build`, start `npm start`, with
+`render.yaml` defines a Node web service, build `npm install && npm run build`, start `npm start`, with
 `ANTHROPIC_API_KEY` as a dashboard-set secret (`sync:false`). Render injects `PORT` automatically.
 
-- Never ship the API key to the browser — all Anthropic calls go through the server.
+- Never ship the API key to the browser: all Anthropic calls go through the server.
 
 ## Project layout
 
